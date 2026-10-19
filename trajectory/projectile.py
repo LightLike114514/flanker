@@ -10,9 +10,9 @@
 
 阻力为二次阻力，阻力系数按密度修正::
 
-    B*^2(y) = B^2 * rho(y)/rho0
-    a_x = -(B*^2/m) * v * v_x
-    a_y = -g - (B*^2/m) * v * v_y
+    B_2^*(y) = B_2 * rho(y)/rho0
+    a_x = -(B_2^*(y)/m) * v * v_x
+    a_y = -g - (B_2^*(y)/m) * v * v_y
 
 用欧拉法积分弹道，在 10° <= theta <= 80°、100 m/s <= v0 <= 1000 m/s 内
 寻找命中目标所需的最小初速度及对应发射角；若有多解，取发射角较小者。
@@ -47,7 +47,7 @@ import numpy as np
 G = 9.8                    # 重力加速度, m/s^2
 MASS = 10.0                # 炮弹质量, kg
 DT = 0.01                  # 欧拉法时间步长, s
-B2_OVER_M = 4.0e-5         # B^2/m, m^-1
+B2_OVER_M = 4.0e-5         # B_2/m, m^-1
 A_LAPSE = 6.5e-3           # 绝热模型参数 a, K/m
 T0 = 300.0                 # 地面温度, K
 ALPHA = 2.5                # 绝热指数 alpha
@@ -165,14 +165,10 @@ class Projectile:
         self.vy0 = self.v0 * math.sin(theta)
 
     # -- 物理模型：子类通过重写下面的方法加入新物理 ------------------------
-    def density_ratio(self, y: float) -> float:
-        """相对空气密度 rho(y)/rho0。基类为理想无阻力模型，不涉及密度。"""
-        return 1.0
-
     def acceleration(self, vx: float, vy: float, y: float) -> tuple[float, float]:
         """返回 (a_x, a_y)。
 
-        基类只考虑重力；子类必须重写本方法以加入空气阻力。
+        基类只考虑重力，作为无阻力对照；子类必须重写本方法以加入空气阻力。
         """
         return 0.0, -G
 
@@ -247,12 +243,13 @@ class AdiabaticDragProjectile(Projectile):
         return factor ** ALPHA
 
     def acceleration(self, vx: float, vy: float, y: float) -> tuple[float, float]:
-        """重写基类的加速度：重力 + 二次阻力。
+        """重写基类的加速度：重力 + 高度相关二次阻力。
 
-            a_x = -(B^2/m) * (rho/rho0) * v * v_x
-            a_y = -g - (B^2/m) * (rho/rho0) * v * v_y
+            B_2^*(y) = B_2 * rho(y)/rho0
+            a_x = -(B_2^*(y)/m) * v * v_x
+            a_y = -g - (B_2^*(y)/m) * v * v_y
         """
-        k = B2_OVER_M * self.density_ratio(y)   # B*^2/m
+        k = B2_OVER_M * self.density_ratio(y)   # B_2^*(y)/m
         v = math.hypot(vx, vy)
         return -k * v * vx, -G - k * v * vy
 
@@ -477,18 +474,22 @@ def main() -> None:
     # 2) 理想无阻力弹道作为对照（复用同一个搜索与 simulate，体现继承的意义）
     vacuum, _ = search_best_launch(projectile_cls=Projectile)
 
+    t_hit = traj.time_at_x(TARGET[0])
+
     print("=" * 62)
     print("含二次空气阻力的最佳发射参数")
     print("=" * 62)
-    print(f"最佳发射角度        theta = {best.angle_deg:8.2f} deg")
-    print(f"最小初速度             v0 = {best.speed:8.2f} m/s")
-    print(f"飞行时间（到达目标）   t  = {traj.time_at_x(TARGET[0]):8.2f} s")
-    print(f"最高高度               h  = {traj.max_height:8.2f} m")
-    print(f"落地射程               R  = {traj.range:8.2f} m")
-    print(f"总飞行时间                = {traj.flight_time:8.2f} s")
-    print(f"与目标最近距离            = {best.miss_distance:8.3f} m  (< {HIT_RADIUS:.1f} m 判据)")
-    print()
-    print(f"对照：无阻力时 v0 = {vacuum.speed:.2f} m/s, theta = {vacuum.angle_deg:.2f} deg")
+    # 作业要求规定的四项输出
+    print(f"最佳发射角度：{best.angle_deg:.2f} °")
+    print(f"最小初速度：{best.speed:.2f} m/s")
+    print(f"飞行时间：{t_hit:.2f} s")
+    print(f"最高高度：{traj.max_height:.2f} m")
+    print("-" * 62)
+    print(f"说明：飞行时间按“发射到命中目标”计；若继续积分至落地，总飞行时间 "
+          f"{traj.flight_time:.2f} s。")
+    print(f"命中目标时弹道与目标的最近距离 {best.miss_distance:.3f} m（判据 < {HIT_RADIUS:.1f} m），"
+          f"落地射程 {traj.range:.2f} m。")
+    print(f"对照：无阻力时 v0 = {vacuum.speed:.2f} m/s，θ = {vacuum.angle_deg:.2f} °")
     print()
     for line in analyse(best, vacuum):
         print(line)
