@@ -26,20 +26,26 @@
 
 主程序只调用 ``simulate()``，不重复编写欧拉迭代过程。
 
+依赖
+----
+- 核心计算与结果输出：仅使用 Python 标准库，**不需要 numpy**；
+- PNG 弹道图：需要 matplotlib（可选）。若未安装，程序自动改输出
+  内置的 ``trajectory.svg``，不会中断计算。
+  安装绘图依赖：``pip install -r requirements.txt``
+
 运行
 ----
     python projectile.py
 
-结果输出到终端，弹道图保存为同目录下的 ``trajectory.png``。
+结果输出到终端，弹道图保存在同目录（PNG 或 SVG）。
 """
 
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-
-import numpy as np
 
 # ---------------------------------------------------------------------------
 # 题目给定的物理参数（SI 单位）
@@ -59,34 +65,56 @@ ANGLE_RANGE = (10.0, 80.0)     # 发射角搜索范围, deg
 SPEED_RANGE = (100.0, 1000.0)  # 初速度搜索范围, m/s
 
 
+def _interpolate(xs: list[float], ys: list[float], x_value: float) -> float:
+    """在单调递增的 xs 上对 ys 做线性插值（纯 Python 实现）。"""
+    if x_value <= xs[0]:
+        return ys[0]
+    if x_value >= xs[-1]:
+        return ys[-1]
+
+    lo, hi = 0, len(xs) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if xs[mid] <= x_value:
+            lo = mid
+        else:
+            hi = mid
+
+    span = xs[hi] - xs[lo]
+    if span == 0.0:
+        return ys[lo]
+    frac = (x_value - xs[lo]) / span
+    return ys[lo] + frac * (ys[hi] - ys[lo])
+
+
 @dataclass
 class Trajectory:
-    """欧拉积分得到的弹道，各数组等长。"""
+    """欧拉积分得到的弹道，各列表等长。"""
 
-    t: np.ndarray
-    x: np.ndarray
-    y: np.ndarray
-    vx: np.ndarray
-    vy: np.ndarray
+    t: list[float]
+    x: list[float]
+    y: list[float]
+    vx: list[float]
+    vy: list[float]
 
     @property
-    def speed(self) -> np.ndarray:
+    def speed(self) -> list[float]:
         """速率 v = sqrt(vx^2 + vy^2)。"""
-        return np.hypot(self.vx, self.vy)
+        return [math.hypot(vx, vy) for vx, vy in zip(self.vx, self.vy)]
 
     @property
     def max_height(self) -> float:
         """弹道最高点高度, m。"""
-        return float(np.max(self.y))
+        return max(self.y)
 
     @property
     def landing_point(self) -> tuple[float, float]:
         """落地点 (x, y=0)，在最后两个时间步之间线性插值。"""
         if len(self.y) < 2 or self.y[-1] >= 0.0:
-            return float(self.x[-1]), float(self.y[-1])
+            return self.x[-1], self.y[-1]
         frac = -self.y[-2] / (self.y[-1] - self.y[-2])
         return (
-            float(self.x[-2] + frac * (self.x[-1] - self.x[-2])),
+            self.x[-2] + frac * (self.x[-1] - self.x[-2]),
             0.0,
         )
 
@@ -94,9 +122,9 @@ class Trajectory:
     def flight_time(self) -> float:
         """落地总飞行时间, s。"""
         if len(self.t) < 2 or self.y[-1] >= 0.0:
-            return float(self.t[-1])
+            return self.t[-1]
         frac = -self.y[-2] / (self.y[-1] - self.y[-2])
-        return float(self.t[-2] + frac * (self.t[-1] - self.t[-2]))
+        return self.t[-2] + frac * (self.t[-1] - self.t[-2])
 
     @property
     def range(self) -> float:
@@ -112,17 +140,28 @@ class Trajectory:
         if len(self.x) == 1:
             return math.hypot(self.x[0] - point[0], self.y[0] - point[1])
 
-        px = self.x - point[0]
-        py = self.y - point[1]
-        ax, ay = px[:-1], py[:-1]
-        dx, dy = px[1:] - ax, py[1:] - ay
-        denom = dx * dx + dy * dy
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t = np.where(denom > 0.0, -(ax * dx + ay * dy) / denom, 0.0)
-        t = np.clip(t, 0.0, 1.0)
-        cx = ax + t * dx
-        cy = ay + t * dy
-        return float(np.min(np.hypot(cx, cy)))
+        px, py = point
+        best = math.inf
+        for i in range(len(self.x) - 1):
+            ax = self.x[i] - px
+            ay = self.y[i] - py
+            dx = self.x[i + 1] - self.x[i]
+            dy = self.y[i + 1] - self.y[i]
+            denom = dx * dx + dy * dy
+            if denom > 0.0:
+                frac = -(ax * dx + ay * dy) / denom
+                if frac < 0.0:
+                    frac = 0.0
+                elif frac > 1.0:
+                    frac = 1.0
+            else:
+                frac = 0.0
+            cx = ax + frac * dx
+            cy = ay + frac * dy
+            dist = math.hypot(cx, cy)
+            if dist < best:
+                best = dist
+        return best
 
     def hits(self, point: tuple[float, float] = TARGET,
              radius: float = HIT_RADIUS) -> bool:
@@ -131,7 +170,7 @@ class Trajectory:
 
     def time_at_x(self, x_value: float) -> float:
         """弹道经过给定水平位置的时间, s（线性插值）。"""
-        return float(np.interp(x_value, self.x, self.t))
+        return _interpolate(self.x, self.t, x_value)
 
 
 class Projectile:
@@ -223,13 +262,7 @@ class Projectile:
             if x_stop is not None and x >= x_stop:  # 到达指定水平位置
                 break
 
-        return Trajectory(
-            t=np.asarray(ts),
-            x=np.asarray(xs),
-            y=np.asarray(ys),
-            vx=np.asarray(vxs),
-            vy=np.asarray(vys),
-        )
+        return Trajectory(t=ts, x=xs, y=ys, vx=vxs, vy=vys)
 
 
 class AdiabaticDragProjectile(Projectile):
@@ -278,7 +311,7 @@ def _vertical_miss(projectile_cls: type[Projectile], speed: float,
     traj = projectile_cls(speed, angle_deg, dt=dt).simulate(x_stop=target[0])
     if traj.x[-1] < target[0]:
         return -math.inf
-    return float(np.interp(target[0], traj.x, traj.y)) - target[1]
+    return _interpolate(traj.x, traj.y, target[0]) - target[1]
 
 
 def minimum_speed_for_angle(
@@ -316,10 +349,16 @@ def minimum_speed_for_angle(
     return LaunchSolution(angle_deg, speed, trajectory)
 
 
+def _angle_values(start: float, stop: float, step: float) -> list[float]:
+    """生成 [start, stop] 内的等间隔角度（避免浮点累积误差）。"""
+    count = int(round((stop - start) / step))
+    return [start + i * step for i in range(count + 1)]
+
+
 def search_best_launch(
     target: tuple[float, float] = TARGET,
     angle_range: tuple[float, float] = ANGLE_RANGE,
-    coarse_step: float = 0.5,
+    coarse_step: float = 1.0,
     fine_step: float = 0.05,
     dt: float = DT,
     projectile_cls: type[Projectile] = AdiabaticDragProjectile,
@@ -332,14 +371,14 @@ def search_best_launch(
     curve: list[tuple[float, float]] = []
     best: LaunchSolution | None = None
 
-    for angle in np.arange(angle_range[0], angle_range[1] + 1e-9, coarse_step):
+    for angle in _angle_values(angle_range[0], angle_range[1], coarse_step):
         solution = minimum_speed_for_angle(
-            float(angle), projectile_cls=projectile_cls, target=target,
+            angle, projectile_cls=projectile_cls, target=target,
             dt=dt, iterations=24,
         )
         if solution is None:
             continue
-        curve.append((float(angle), solution.speed))
+        curve.append((angle, solution.speed))
         if best is None or solution.speed < best.speed - 1e-9:
             best = solution
 
@@ -350,9 +389,9 @@ def search_best_launch(
     center = best.angle_deg
     lo = max(angle_range[0], center - coarse_step)
     hi = min(angle_range[1], center + coarse_step)
-    for angle in np.arange(lo, hi + 1e-9, fine_step):
+    for angle in _angle_values(lo, hi, fine_step):
         solution = minimum_speed_for_angle(
-            float(angle), projectile_cls=projectile_cls, target=target, dt=dt,
+            angle, projectile_cls=projectile_cls, target=target, dt=dt,
         )
         if solution is not None and solution.speed < best.speed - 1e-9:
             best = solution
@@ -364,15 +403,15 @@ def analyse(solution: LaunchSolution, vacuum: LaunchSolution) -> list[str]:
     """生成结果分析文字（空气密度随高度降低的影响）。"""
     traj = solution.trajectory
     apex = traj.max_height
-    rho_apex = AdiabaticDragProjectile(solution.speed, solution.angle_deg).density_ratio(apex)
+    rho_apex = AdiabaticDragProjectile(
+        solution.speed, solution.angle_deg).density_ratio(apex)
 
-    v_launch = solution.speed
-    drag_launch = B2_OVER_M * v_launch ** 2
-    v_apex = float(np.hypot(traj.vx[int(np.argmax(traj.y))],
-                            traj.vy[int(np.argmax(traj.y))]))
+    drag_launch = B2_OVER_M * solution.speed ** 2
+    i_apex = max(range(len(traj.y)), key=traj.y.__getitem__)
+    v_apex = math.hypot(traj.vx[i_apex], traj.vy[i_apex])
     drag_apex = B2_OVER_M * rho_apex * v_apex ** 2
 
-    lines = [
+    return [
         "空气密度随高度降低的影响：",
         f"  - 最高点 y = {apex:.1f} m 处，rho/rho0 = {rho_apex:.4f}，"
         f"空气密度仅比地面低 {(1 - rho_apex) * 100:.2f}%。",
@@ -386,33 +425,163 @@ def analyse(solution: LaunchSolution, vacuum: LaunchSolution) -> list[str]:
         "故阻力影响较小，",
         "    结果接近真空弹道，但仍需略大的初速度和略小的发射角。",
     ]
-    return lines
+
+
+def _plot_labels(plt) -> dict[str, str]:
+    """优先使用系统中文字体；没有中文字体时回退英文，避免出现方框。"""
+    try:
+        from matplotlib import font_manager
+        available = {f.name for f in font_manager.fontManager.ttflist}
+        for name in ("Microsoft YaHei", "SimHei", "Noto Sans CJK SC",
+                     "Source Han Sans SC", "WenQuanYi Zen Hei", "PingFang SC"):
+            if name in available:
+                plt.rcParams["font.sans-serif"] = [name, "DejaVu Sans"]
+                plt.rcParams["axes.unicode_minus"] = False
+                return {
+                    "xlabel": "水平距离 x / m",
+                    "ylabel": "高度 y / m",
+                    "title": "炮弹弹道与目标位置",
+                    "start": "发射点",
+                    "target": "目标 (1000, 100) m",
+                    "traj": "含空气阻力弹道",
+                    "inset": "目标附近放大（虚线圆 R = 2 m）",
+                    "right_title": "最小初速度随发射角的变化",
+                    "right_xlabel": "发射角 $\\theta$ / (°)",
+                    "right_ylabel": "最小初速度 $v_0$ / (m/s)",
+                    "curve": "数值搜索：各角度所需最小 $v_0$",
+                    "optimum": "最优解 ({angle:.2f}°, {speed:.2f} m/s)",
+                    "vacuum": "无阻力最小初速度 {speed:.2f} m/s",
+                    "closest": "命中点最近距离",
+                    "max_height": "最高点 h",
+                    "range": "射程 R",
+                }
+    except Exception:
+        pass
+
+    return {
+        "xlabel": "Horizontal distance x / m",
+        "ylabel": "Height y / m",
+        "title": "Projectile trajectory and target",
+        "start": "Launch point",
+        "target": "Target (1000, 100) m",
+        "traj": "Trajectory with drag",
+        "inset": "Zoom near target (dashed circle R = 2 m)",
+        "right_title": "Minimum v0 versus launch angle",
+        "right_xlabel": "Launch angle $\\theta$ / (deg)",
+        "right_ylabel": "Minimum $v_0$ / (m/s)",
+        "curve": "Minimum $v_0$ for each angle",
+        "optimum": "Optimum ({angle:.2f} deg, {speed:.2f} m/s)",
+        "vacuum": "No-drag minimum v0 = {speed:.2f} m/s",
+        "closest": "Closest approach",
+        "max_height": "Max height h",
+        "range": "Range R",
+    }
+
+
+def _write_svg(solution: LaunchSolution, path: Path) -> Path:
+    """无 matplotlib 时的纯标准库 SVG 绘图（英文标签，避免字体问题）。"""
+    traj = solution.trajectory
+    width, height = 960, 540
+    left, right, top, bottom = 80, 30, 50, 60
+    x_max, y_max = 1150.0, 340.0
+
+    def sx(x: float) -> float:
+        return left + x / x_max * (width - left - right)
+
+    def sy(y: float) -> float:
+        return height - bottom - y / y_max * (height - top - bottom)
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        '<g stroke="#dddddd" stroke-width="1">',
+    ]
+    for gx in range(0, 1201, 200):
+        parts.append(f'<line x1="{sx(gx):.1f}" y1="{sy(0):.1f}" '
+                     f'x2="{sx(gx):.1f}" y2="{sy(y_max):.1f}"/>')
+    for gy in range(0, 341, 50):
+        parts.append(f'<line x1="{sx(0):.1f}" y1="{sy(gy):.1f}" '
+                     f'x2="{sx(x_max):.1f}" y2="{sy(gy):.1f}"/>')
+    parts.append("</g>")
+
+    parts.append(f'<line x1="{sx(0):.1f}" y1="{sy(0):.1f}" '
+                 f'x2="{sx(x_max):.1f}" y2="{sy(0):.1f}" stroke="black"/>')
+    parts.append(f'<line x1="{sx(0):.1f}" y1="{sy(0):.1f}" '
+                 f'x2="{sx(0):.1f}" y2="{sy(y_max):.1f}" stroke="black"/>')
+
+    font = 'font-family="DejaVu Sans, Arial, sans-serif"'
+
+    # 坐标刻度
+    for gx in range(0, 1001, 200):
+        parts.append(f'<text x="{sx(gx):.1f}" y="{sy(0) + 18:.1f}" text-anchor="middle" '
+                     f'{font} font-size="12">{gx}</text>')
+    for gy in range(0, 341, 50):
+        parts.append(f'<text x="{sx(0) - 8:.1f}" y="{sy(gy) + 4:.1f}" text-anchor="end" '
+                     f'{font} font-size="12">{gy}</text>')
+
+    points = " ".join(f"{sx(x):.1f},{sy(y):.1f}" for x, y in zip(traj.x, traj.y))
+    parts.append(f'<polyline points="{points}" fill="none" '
+                 'stroke="#1f77b4" stroke-width="2.5"/>')
+    parts.append(f'<circle cx="{sx(0):.1f}" cy="{sy(0):.1f}" r="5" fill="#2ca02c"/>')
+    parts.append(f'<circle cx="{sx(TARGET[0]):.1f}" cy="{sy(TARGET[1]):.1f}" '
+                 'r="6" fill="none" stroke="#d62728" stroke-width="2.5"/>')
+
+    parts += [
+        f'<text x="{width / 2:.0f}" y="28" text-anchor="middle" {font} '
+        'font-size="18">Projectile trajectory (Euler, dt = 0.01 s)</text>',
+        f'<text x="{width / 2:.0f}" y="{height - 16}" text-anchor="middle" {font} '
+        'font-size="14">Horizontal distance x / m</text>',
+        f'<text x="20" y="{height / 2:.0f}" text-anchor="middle" {font} '
+        f'font-size="14" transform="rotate(-90 20 {height / 2:.0f})">Height y / m</text>',
+        f'<text x="{sx(0) + 8:.0f}" y="{sy(0) - 10:.0f}" {font} '
+        'font-size="12" fill="#2ca02c">Launch point</text>',
+        f'<text x="{sx(TARGET[0]) + 10:.0f}" y="{sy(TARGET[1]) - 10:.0f}" {font} '
+        'font-size="12" fill="#d62728">Target</text>',
+        f'<text x="{sx(380):.0f}" y="{sy(38):.0f}" {font} font-size="12">'
+        f'theta = {solution.angle_deg:.2f} deg, v0 = {solution.speed:.2f} m/s</text>',
+        f'<text x="{sx(380):.0f}" y="{sy(38) + 18:.0f}" {font} font-size="12">'
+        f'closest approach = {solution.miss_distance:.3f} m, '
+        f'max height = {traj.max_height:.1f} m, range = {traj.range:.1f} m</text>',
+    ]
+    parts.append("</svg>")
+
+    path.write_text("\n".join(parts), encoding="utf-8")
+    return path
 
 
 def plot_solution(solution: LaunchSolution,
                   curve: list[tuple[float, float]],
                   vacuum: LaunchSolution | None = None,
                   path: str | Path = "trajectory.png") -> Path:
-    """绘制弹道、目标位置以及“最小初速度-发射角”曲线。"""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    """绘制弹道、目标位置以及“最小初速度-发射角”曲线。
 
-    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
-    plt.rcParams["axes.unicode_minus"] = False
+    若环境没有 matplotlib，则自动改为输出同名的 SVG 文件。
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        svg_path = Path(path).with_suffix(".svg")
+        _write_svg(solution, svg_path)
+        print("提示：未安装 matplotlib，已改用内置 SVG 输出。")
+        return svg_path
+
+    labels = _plot_labels(plt)
 
     traj = solution.trajectory
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12.6, 5.0),
                                     constrained_layout=True)
 
     # ---- 左图：弹道 ----
-    ax1.plot(traj.x, traj.y, color="tab:blue", lw=2.0, label="含空气阻力弹道")
-    ax1.plot(0.0, 0.0, "o", color="tab:green", ms=7, label="发射点")
+    ax1.plot(traj.x, traj.y, color="tab:blue", lw=2.0, label=labels["traj"])
+    ax1.plot(0.0, 0.0, "o", color="tab:green", ms=7, label=labels["start"])
     ax1.plot(*TARGET, "o", mfc="none", mec="tab:red", mew=2.0, ms=10,
-             label="目标 (1000, 100) m")
-    ax1.set_xlabel("水平距离 x / m")
-    ax1.set_ylabel("高度 y / m")
-    ax1.set_title("炮弹弹道与目标位置")
+             label=labels["target"])
+    ax1.set_xlabel(labels["xlabel"])
+    ax1.set_ylabel(labels["ylabel"])
+    ax1.set_title(labels["title"])
     ax1.grid(True, ls=":", alpha=0.6)
     ax1.set_aspect("equal", adjustable="box")
     ax1.set_xlim(-10, 1120)
@@ -422,9 +591,9 @@ def plot_solution(solution: LaunchSolution,
     info = (
         f"$\\theta$ = {solution.angle_deg:.2f}°    "
         f"$v_0$ = {solution.speed:.2f} m/s\n"
-        f"命中点最近距离 = {solution.miss_distance:.3f} m    "
-        f"最高点 h = {traj.max_height:.1f} m    "
-        f"射程 R = {traj.range:.1f} m"
+        f"{labels['closest']} = {solution.miss_distance:.3f} m    "
+        f"{labels['max_height']} = {traj.max_height:.1f} m    "
+        f"{labels['range']} = {traj.range:.1f} m"
     )
     ax1.text(0.5, -0.20, info, transform=ax1.transAxes, ha="center", va="top",
              fontsize=9.5,
@@ -439,24 +608,24 @@ def plot_solution(solution: LaunchSolution,
     inset.set_xlim(TARGET[0] - 6, TARGET[0] + 6)
     inset.set_ylim(TARGET[1] - 6, TARGET[1] + 6)
     inset.tick_params(labelsize=7)
-    inset.set_title("目标附近放大（虚线圆 R = 2 m）", fontsize=8)
+    inset.set_title(labels["inset"], fontsize=8)
     inset.grid(True, ls=":", alpha=0.5)
 
     # ---- 右图：最小初速度随发射角的变化 ----
-    angles = np.array([a for a, _ in curve])
-    speeds = np.array([v for _, v in curve])
-    ax2.plot(angles, speeds, color="tab:purple", lw=1.8,
-             label="数值搜索：各角度所需最小 $v_0$")
+    angles = [a for a, _ in curve]
+    speeds = [v for _, v in curve]
+    ax2.plot(angles, speeds, color="tab:purple", lw=1.8, label=labels["curve"])
     ax2.plot(solution.angle_deg, solution.speed, "*", color="tab:red", ms=14,
-             label=f"最优解 ({solution.angle_deg:.2f}°, {solution.speed:.2f} m/s)")
+             label=labels["optimum"].format(angle=solution.angle_deg,
+                                            speed=solution.speed))
 
     if vacuum is not None:
         ax2.axhline(vacuum.speed, color="0.4", ls="--", lw=1.2,
-                    label=f"无阻力最小初速度 {vacuum.speed:.2f} m/s")
+                    label=labels["vacuum"].format(speed=vacuum.speed))
 
-    ax2.set_xlabel("发射角 $\\theta$ / (°)")
-    ax2.set_ylabel("最小初速度 $v_0$ / (m/s)")
-    ax2.set_title("最小初速度随发射角的变化")
+    ax2.set_xlabel(labels["right_xlabel"])
+    ax2.set_ylabel(labels["right_ylabel"])
+    ax2.set_title(labels["right_title"])
     ax2.grid(True, ls=":", alpha=0.6)
     ax2.legend(loc="upper center", fontsize=8)
 
@@ -467,6 +636,12 @@ def plot_solution(solution: LaunchSolution,
 
 
 def main() -> None:
+    # 某些终端编码无法显示中文时用 '?' 代替，避免 UnicodeEncodeError 中断
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
     # 1) 含绝热二次阻力的最优发射方案
     best, curve = search_best_launch()
     traj = best.trajectory

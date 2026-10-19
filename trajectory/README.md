@@ -75,17 +75,28 @@ Projectile                  基类：公共参数 + 欧拉法积分（理想无�
 | 文件 | 说明 |
 | --- | --- |
 | `projectile.py` | 作业源代码（类、搜索、绘图、结果输出） |
-| `trajectory.png` | 运行脚本生成的弹道图 |
+| `requirements.txt` | 可选绘图依赖（matplotlib）；核心计算只用标准库 |
+| `trajectory.png` | 有 matplotlib 时生成的弹道图 |
+| `trajectory.svg` | 无 matplotlib 时自动生成的弹道图 |
 | `README.md` | 本说明 |
 
 ## 4. 运行方法
 
+核心计算与结果输出只使用 Python 标准库，**不需要 numpy**，可直接运行：
+
 ```bash
-pip install numpy matplotlib
 python projectile.py
 ```
 
-终端输出最佳参数与分析，并在同目录生成 `trajectory.png`。
+若要生成 PNG 弹道图，安装可选的绘图依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+若环境没有 matplotlib，程序会自动改用内置绘图代码输出 `trajectory.svg`，
+不会中断计算。绘图标签会优先使用系统中文字体（微软雅黑/黑体/Noto CJK 等），
+检测不到时自动切换为英文标签，避免出现方框。
 
 ## 5. 计算结果
 

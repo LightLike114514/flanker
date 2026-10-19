@@ -1,0 +1,4 @@
+# 核心计算与结果输出仅使用 Python 标准库，无需 numpy。
+# 以下依赖只用于生成 PNG 弹道图；未安装时程序会自动输出 trajectory.svg。
+# 安装：pip install -r requirements.txt
+matplotlib>=3.5
